@@ -98,4 +98,4 @@ model families) is planned so adopters can start without writing a provider.
 
 ## License
 
-Apache-2.0.
+MIT.
