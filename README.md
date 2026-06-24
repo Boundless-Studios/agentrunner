@@ -58,6 +58,37 @@ from agents import Agent
 result = await AgentRunner.run(Agent(name="demo", model="...", instructions="..."), "hello")
 ```
 
+### Batteries-included: OpenRouter
+
+Don't want to write a provider? Use the bundled OpenRouter one — a single
+`OPENROUTER_API_KEY` reaches every model family (Claude, GPT, Llama, Qwen,
+DeepSeek, Gemini, …) through OpenRouter's OpenAI-compatible endpoint, with model
+fallback built in:
+
+```python
+import os
+from agentrunner import configure_agentrunner
+from agentrunner.providers import OpenRouterModelClientProvider
+
+configure_agentrunner(
+    model_provider=OpenRouterModelClientProvider(
+        # api_key defaults to $OPENROUTER_API_KEY
+        fallback_models=["anthropic/claude-sonnet-4.5", "openai/gpt-4o-mini"],
+    )
+)
+
+from agents import Agent
+result = await AgentRunner.run(
+    Agent(name="demo", model="anthropic/claude-sonnet-4.5", instructions="..."),
+    "hello",
+)
+```
+
+Models are addressed by their OpenRouter slug (`vendor/model`). The provider
+forces Chat Completions (OpenRouter doesn't fully implement the Responses API),
+honors the validation-retry budget, and classifies rate-limit/provider errors
+for fallback.
+
 ### Lazy configuration
 
 If you can't configure at startup, register a bootstrap that runs on first use:
@@ -92,9 +123,9 @@ if it still fails, each validator's deterministic `normalize()` bounds the value
 
 ## Status
 
-`0.1.0` ships the execution engine and the `ModelClientProvider` seam. A
-batteries-included OpenRouter default provider (single `OPENROUTER_API_KEY`, all
-model families) is planned so adopters can start without writing a provider.
+`0.2.0` ships the execution engine, the `ModelClientProvider` seam, and the
+batteries-included **OpenRouter** provider (single `OPENROUTER_API_KEY`, all
+model families) so adopters can start without writing a provider.
 
 ## License
 
