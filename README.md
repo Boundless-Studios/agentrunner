@@ -22,7 +22,14 @@ optional hooks via a small protocol.
 ## Install
 
 ```bash
-pip install agentrunner
+pip install boundless-agentrunner
+```
+
+The distribution is published as `boundless-agentrunner` (the `agentrunner` name
+on PyPI was taken); the **import name is still `agentrunner`**:
+
+```python
+import agentrunner
 ```
 
 ## Quick start
