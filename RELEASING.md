@@ -1,12 +1,31 @@
 # Releasing
 
-This repo publishes to [PyPI](https://pypi.org/project/agentrunner/) via **GitHub
-Actions + PyPI Trusted Publishing (OIDC)** — no API tokens or stored secrets. A
-push of a `v*` tag builds the package and publishes it.
+This repo publishes to [PyPI](https://pypi.org/project/boundless-agentrunner/)
+via **GitHub Actions + PyPI Trusted Publishing (OIDC)** — no API tokens or stored
+secrets. A push of a `v*` tag builds the package and publishes it.
 
 This document is the template Boundless Studios uses for **every** OSS Python
 repo. To set up a brand-new repo, follow [One-time setup](#one-time-setup); to
 ship a release, follow [Cutting a release](#cutting-a-release).
+
+## Distribution name vs import name
+
+The PyPI **distribution name** is `boundless-agentrunner` — the plain
+`agentrunner` name was already taken on PyPI. The **import name is unchanged**:
+
+```bash
+pip install boundless-agentrunner
+```
+```python
+import agentrunner
+```
+
+This split is intentional and supported: `pyproject.toml` sets
+`name = "boundless-agentrunner"` (what `pip install` uses) while
+`[tool.hatch.build.targets.wheel] packages = ["src/agentrunner"]` keeps the
+import package `agentrunner`. **When a name is taken, namespace the distribution,
+not the import.** For a new Boundless repo, prefer the bare name if available and
+fall back to a `boundless-` prefix.
 
 ## How it works
 
@@ -34,7 +53,7 @@ If the project **does not exist on PyPI yet** (first release), register a
 
    | Field | Value |
    |-------|-------|
-   | PyPI Project Name | `agentrunner` *(the package name, not the repo, if they differ)* |
+   | PyPI Project Name | `boundless-agentrunner` *(the **distribution** name, which may differ from both the repo and the import name)* |
    | Owner | `Boundless-Studios` |
    | Repository name | `agentrunner` |
    | Workflow name | `publish.yml` |
@@ -46,6 +65,12 @@ If the project **already exists on PyPI**, register the publisher from the
 project page instead: **Manage → Settings → Publishing → Add a new publisher**
 (same five fields, minus the project name).
 
+> **The publisher binds to the distribution name.** PyPI authorizes the upload
+> against the project named in `pyproject.toml`'s `name`, not the repo name. If
+> the build produces `agentrunner` but the publisher is registered for
+> `boundless-agentrunner` (or vice versa), the upload fails. Keep
+> `pyproject` `name` and the registered PyPI Project Name identical.
+>
 > The four GitHub-side fields must exactly match the OIDC claims the workflow
 > emits. If a publish fails with `invalid-publisher: valid token, but no
 > corresponding publisher`, the failed run's logs print the exact claims it sent
@@ -67,16 +92,16 @@ the one you registered above.
 
 ## Cutting a release
 
-1. **Bump the version.** Edit `version` in `pyproject.toml` (e.g. `0.1.0` →
-   `0.2.0`). Follow [SemVer](https://semver.org/). Open a PR, get it merged to
+1. **Bump the version.** Edit `version` in `pyproject.toml` (e.g. `0.2.0` →
+   `0.3.0`). Follow [SemVer](https://semver.org/). Open a PR, get it merged to
    `main`.
 2. **Tag the merged commit.** The tag **must** match the `pyproject.toml`
    version, prefixed with `v`:
 
    ```bash
    git checkout main && git pull
-   git tag v0.2.0          # must equal pyproject version
-   git push origin v0.2.0
+   git tag v0.3.0          # must equal pyproject version
+   git push origin v0.3.0
    ```
 
    > **The tag determines what gets built.** `publish.yml` checks out the tag's
@@ -95,8 +120,8 @@ the one you registered above.
 4. **Verify.** Once green, the release is live within a minute or two:
 
    ```bash
-   curl -s -o /dev/null -w '%{http_code}\n' https://pypi.org/pypi/agentrunner/json   # 200
-   python -m venv /tmp/ar && /tmp/ar/bin/pip install agentrunner==0.2.0
+   curl -s -o /dev/null -w '%{http_code}\n' https://pypi.org/pypi/boundless-agentrunner/json   # 200
+   python -m venv /tmp/ar && /tmp/ar/bin/pip install boundless-agentrunner==0.3.0
    /tmp/ar/bin/python -c "import agentrunner; print('ok')"
    ```
 
@@ -112,19 +137,23 @@ gh run rerun <run-id> --repo Boundless-Studios/agentrunner
 ```
 
 PyPI rejects re-uploading a version that already published, so if the build step
-succeeded but only the upload failed, a re-run is safe and idempotent. If you
-need to change the *built artifact*, bump to a new version and tag again — a
+succeeded but only the upload failed, a re-run is safe and idempotent. A re-run
+only helps when the *built artifact* is unchanged — if you renamed the
+distribution or changed the code, bump to a new version and tag again, because a
 published version is immutable.
 
 ## Reuse checklist (new Boundless OSS repo)
 
-- [ ] `pyproject.toml` has a correct `name`, `version`, `license`, and build
-      backend
+- [ ] `pyproject.toml` has a correct `name` (bare name if free on PyPI, else
+      `boundless-<name>`), `version`, `license`, and build backend
+- [ ] Import package under `src/<import_name>/` with
+      `[tool.hatch.build.targets.wheel] packages = ["src/<import_name>"]`
 - [ ] `.github/workflows/publish.yml` copied in (tag-triggered, `environment: pypi`,
       `id-token: write`)
 - [ ] `pypi` GitHub Environment created
-- [ ] PyPI pending trusted publisher registered (owner / repo / `publish.yml` /
-      `pypi`) — see [step 1](#1-register-the-trusted-publisher-on-pypi)
-- [ ] `README.md` shows `pip install <package>`
-- [ ] First tag `v0.1.0` pushed; workflow green; `pip install` verified
-- [ ] This `RELEASING.md` copied in and the package name updated
+- [ ] PyPI pending trusted publisher registered for the **distribution name**
+      (owner / repo / `publish.yml` / `pypi`) — see
+      [step 1](#1-register-the-trusted-publisher-on-pypi)
+- [ ] `README.md` shows `pip install <dist-name>` and, if it differs, the import name
+- [ ] First version tagged; workflow green; `pip install` verified
+- [ ] This `RELEASING.md` copied in and the names updated
