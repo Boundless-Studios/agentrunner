@@ -276,8 +276,9 @@ class AgentRunner:
             use_fallback: Whether to use model fallback on provider failures (default True)
             trace_group_id: Optional group ID for OpenAI tracing (e.g. session/campaign ID)
             trace_metadata: Optional metadata dict for OpenAI tracing
-            timeout: Maximum seconds to wait for agent completion (default 90s).
-                     Set to None to disable timeout.
+            timeout: Maximum seconds to wait for each model attempt (default 90s).
+                     Set to None to disable timeout. When fallback is enabled,
+                     each fallback model receives its own timeout budget.
             provider_override: Optional provider slug to force for the primary model
                      (e.g. "base10"). Only applies to the direct model call, not
                      fallback models.
@@ -364,11 +365,13 @@ class AgentRunner:
         _prompt_cell: List[str] = [prompt]
 
         # Define the operation to run with a specific model
-        async def run_with_model(resolved_model: str, model_provider) -> Any:
+        async def run_with_model(attempt_model: str, model_provider) -> Any:
+            nonlocal resolved_model
+            resolved_model = attempt_model
             runner = Runner()
 
             # Inject provider tag into trace metadata
-            provider_type = prov.get_provider_for_model(resolved_model)
+            provider_type = prov.get_provider_for_model(attempt_model)
             provider_tag = f"provider:{provider_type}"
             tags = trace_metadata.get("tags", [])
             # Remove any previous provider tag (in case of fallback retry)
@@ -379,11 +382,11 @@ class AgentRunner:
             # Create run config for this specific model
             run_model_settings_kwargs = dict(model_settings_kwargs)
             if model_settings_by_model:
-                scoped_settings = model_settings_by_model.get(resolved_model)
+                scoped_settings = model_settings_by_model.get(attempt_model)
                 if scoped_settings is None:
                     # Try canonical/provider-specific aliases (e.g. ModelName.value
                     # / .name) via the injected provider — keeps this gaia-free.
-                    for alias in prov.get_model_setting_aliases(resolved_model):
+                    for alias in prov.get_model_setting_aliases(attempt_model):
                         scoped_settings = model_settings_by_model.get(alias)
                         if scoped_settings is not None:
                             break
@@ -391,18 +394,18 @@ class AgentRunner:
                     run_model_settings_kwargs.update(scoped_settings)
             if "max_tokens" in run_model_settings_kwargs:
                 run_model_settings_kwargs["max_tokens"] = prov.clamp_max_tokens(
-                    resolved_model,
+                    attempt_model,
                     run_model_settings_kwargs["max_tokens"],
                 )
 
             run_config = RunConfig(
-                model=resolved_model,
+                model=attempt_model,
                 model_provider=model_provider,
                 model_settings=ModelSettings(**run_model_settings_kwargs),
                 **tracing_kwargs,
             )
 
-            logger.info(f"[AgentRunner] Running agent '{agent.name if hasattr(agent, 'name') else 'Unknown'}' with model {resolved_model}")
+            logger.info(f"[AgentRunner] Running agent '{agent.name if hasattr(agent, 'name') else 'Unknown'}' with model {attempt_model}")
             if max_turns:
                 logger.debug(f"  Max turns: {max_turns}")
 
@@ -415,11 +418,16 @@ class AgentRunner:
             if context is not None:
                 run_kwargs["context"] = context
 
-            return await runner.run(
-                agent,
-                _prompt_cell[0],
-                **run_kwargs
-            )
+            run_coro = runner.run(agent, _prompt_cell[0], **run_kwargs)
+            if timeout is None:
+                return await run_coro
+            try:
+                return await asyncio.wait_for(run_coro, timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError(
+                    f"Agent '{getattr(agent, 'name', None) or 'Unknown'}' timed out "
+                    f"after {timeout}s (model={attempt_model})"
+                ) from exc
 
         # Run with or without fallback
         resolved_model = model_key  # Initialize for error handling
@@ -459,21 +467,7 @@ class AgentRunner:
 
             async def _run_with_validation() -> Any:
                 """Run the agent, then apply the correction loop if validators are set."""
-                if timeout is not None:
-                    try:
-                        raw_result = await asyncio.wait_for(_execute(), timeout=timeout)
-                    except asyncio.TimeoutError:
-                        logger.error(
-                            "[AgentRunner] Agent '%s' timed out after %ds | model=%s",
-                            agent_name or "Unknown",
-                            timeout,
-                            resolved_model,
-                        )
-                        raise TimeoutError(
-                            f"Agent '{agent_name or 'Unknown'}' timed out after {timeout}s (model={resolved_model})"
-                        )
-                else:
-                    raw_result = await _execute()
+                raw_result = await _execute()
 
                 # Fast path: no validators → return immediately (zero-overhead no-op)
                 if not output_validators:
@@ -550,22 +544,7 @@ class AgentRunner:
                         len(all_violations),
                     )
 
-                    if timeout is not None:
-                        try:
-                            current_result = await asyncio.wait_for(
-                                _execute(), timeout=timeout
-                            )
-                        except asyncio.TimeoutError:
-                            logger.error(
-                                "[AgentRunner] Agent '%s' timed out on correction attempt %d",
-                                agent_name or "Unknown",
-                                attempt + 1,
-                            )
-                            raise TimeoutError(
-                                f"Agent '{agent_name or 'Unknown'}' timed out after {timeout}s (correction attempt {attempt + 1})"
-                            )
-                    else:
-                        current_result = await _execute()
+                    current_result = await _execute()
 
                     structured = AgentRunner.extract_structured_output(current_result)
                     current_validated = structured if structured is not None else current_result
@@ -646,6 +625,11 @@ class AgentRunner:
 
             return await _run_with_validation()
         except TimeoutError:
+            logger.error(
+                "[AgentRunner] Agent '%s' exhausted model attempts after timeout | model=%s",
+                agent_name or "Unknown",
+                resolved_model,
+            )
             raise  # Let timeout propagate cleanly to callers
         except Exception as e:
             # Prepare error context - be careful not to hide the actual error
