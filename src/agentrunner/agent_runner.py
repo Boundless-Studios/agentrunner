@@ -1002,7 +1002,11 @@ class AgentRunner:
                     # Provider error before streaming started - try next model
                     reason = "rate-limited" if prov.is_rate_limit_error(e) else type(e).__name__
                     failed_models.append(f"{current_model}({reason})")
-                    logger.exception("[%s] %s failed: %s", agent_name, current_model, reason)
+                    # This attempt is recoverable: a later model may still complete
+                    # the stream. Keep it as a breadcrumb without emitting an
+                    # error-level exception event; terminal exhaustion is logged
+                    # below and then raised with the original exception chained.
+                    logger.warning("[%s] %s failed: %s", agent_name, current_model, reason)
 
                     # Add delay for rate limit errors
                     if prov.is_rate_limit_error(e):
