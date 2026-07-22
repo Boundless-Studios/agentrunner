@@ -161,6 +161,8 @@ class OpenRouterModelClientProvider:
         return any(marker in message for marker in _RATE_LIMIT_MARKERS)
 
     def is_provider_error(self, exc: Exception) -> bool:
+        if isinstance(exc, TimeoutError):
+            return True
         if isinstance(getattr(exc, "status_code", None), int) and exc.status_code >= 429:
             return True
         message = str(exc).lower()

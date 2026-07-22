@@ -33,6 +33,7 @@ def test_error_classification():
     assert prov.is_rate_limit_error(_Status429()) is True
     assert prov.is_rate_limit_error(Exception("429 Too Many Requests")) is True
     assert prov.is_provider_error(Exception("connection reset")) is True
+    assert prov.is_provider_error(TimeoutError()) is True
     assert prov.is_rate_limit_error(Exception("bad schema")) is False
     assert prov.is_provider_error(Exception("validation error: missing field")) is False
 
