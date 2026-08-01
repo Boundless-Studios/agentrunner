@@ -301,7 +301,9 @@ class AgentRunner:
             **kwargs: Additional keyword arguments for ModelSettings
 
         Returns:
-            The result from the agent run
+            The result from the agent run. The returned result carries a
+            ``model_used`` attribute naming the model that actually produced the
+            output (the resolved/fallback model), attached best-effort.
         """
         # Resolve the provider FIRST so any lazy host bootstrap runs before SDK
         # setup. configure_agents_sdk() latches _applied and reads the injected
@@ -623,7 +625,9 @@ class AgentRunner:
                         )
                 return normalized
 
-            return await _run_with_validation()
+            result = await _run_with_validation()
+            AgentRunner._attach_model_used(result, resolved_model)
+            return result
         except TimeoutError:
             logger.error(
                 "[AgentRunner] Agent '%s' exhausted model attempts after timeout | model=%s",
@@ -1300,3 +1304,20 @@ class AgentRunner:
                 logger.error(f"Failed to parse text response as JSON: {text_response[:200]}")
 
         return None
+
+    @staticmethod
+    def _attach_model_used(result: Any, model_used: Optional[str]) -> Any:
+        """Best-effort attribution of the model that produced ``result``.
+
+        Sets ``result.model_used = model_used`` when the result accepts plain
+        attribute assignment. Never raises and never forces the attribute via
+        ``object.__setattr__``; results that refuse assignment are returned
+        unchanged. When ``model_used`` is None the result is returned unchanged.
+        """
+        if model_used is None:
+            return result
+        try:
+            result.model_used = model_used
+        except Exception:  # noqa: BLE001
+            pass
+        return result

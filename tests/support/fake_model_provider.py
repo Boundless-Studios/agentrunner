@@ -29,10 +29,12 @@ class FakeModelClientProvider:
         result_text: str = "ok",
         error: Optional[Exception] = None,
         fallback_models: Optional[list[str]] = None,
+        result_model: Optional[str] = None,
     ) -> None:
         self.result_text = result_text
         self.error = error
         self._fallback_models = fallback_models or []
+        self.result_model = result_model
         self.was_called = False
         self.last_model_key: Optional[str] = None
 
@@ -57,7 +59,10 @@ class FakeModelClientProvider:
         self.last_model_key = model_key
         if self.error is not None:
             raise self.error
-        return FakeRunResult(final_output=self.result_text), model_key
+        return (
+            FakeRunResult(final_output=self.result_text),
+            self.result_model if self.result_model is not None else model_key,
+        )
 
     def get_fallback_models(self, model: str) -> list[str]:
         return list(self._fallback_models)
