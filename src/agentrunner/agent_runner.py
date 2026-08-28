@@ -480,7 +480,7 @@ class AgentRunner:
                         model_key,
                         run_with_model,
                         max_retries_per_model=2,
-                        retry_on_validation_failure=True,
+                        retry_on_validation_failure=False,
                         task_name=agent_name,
                         provider_override=provider_override,
                     )
