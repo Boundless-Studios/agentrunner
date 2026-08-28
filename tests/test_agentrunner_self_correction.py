@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from agents import Agent
+from agents.exceptions import ModelBehaviorError
 
 from agentrunner import AgentRunner, runtime
 from agentrunner.output_validation import Violation
@@ -152,6 +153,81 @@ async def test_no_validators_is_a_noop_no_emitter_call():
 
     assert provider.run_calls == 1
     assert emitted == []
+
+
+@pytest.mark.asyncio
+async def test_structured_output_parse_failure_uses_tool_free_correction(monkeypatch):
+    import agentrunner.agent_runner as ar
+
+    provider = _CountingProvider()
+    runtime.configure_agentrunner(model_provider=provider)
+    calls = []
+
+    async def fake_run(_runner, run_agent, run_prompt, **_kwargs):
+        calls.append((run_agent, run_prompt))
+        if len(calls) == 1:
+            raise ModelBehaviorError("Invalid JSON: output ended mid-object")
+        return SimpleNamespace(final_output={"label": "fixed"})
+
+    monkeypatch.setattr(ar.Runner, "run", fake_run)
+    agent = Agent(
+        name="probe",
+        model="fake",
+        instructions="x",
+        output_type=dict,
+        tools=[lambda: None],
+    )
+
+    result = await AgentRunner.run(
+        agent,
+        "return JSON",
+        model="fake",
+        use_fallback=False,
+        max_corrections=1,
+    )
+
+    assert result.final_output == {"label": "fixed"}
+    assert len(calls) == 2
+    assert calls[0][0].tools
+    assert calls[1][0].tools == []
+    assert "Invalid JSON: output ended mid-object" in calls[1][1]
+    assert "corrected, complete response" in calls[1][1]
+
+
+@pytest.mark.asyncio
+async def test_structured_output_correction_exhaustion_reraises_last_error(monkeypatch):
+    import agentrunner.agent_runner as ar
+
+    provider = _CountingProvider()
+    runtime.configure_agentrunner(model_provider=provider)
+    errors = [
+        ModelBehaviorError("Invalid JSON: first response"),
+        ModelBehaviorError("Schema validation failed: corrected response"),
+    ]
+
+    async def fake_run(_runner, _agent, _prompt, **_kwargs):
+        raise errors.pop(0)
+
+    monkeypatch.setattr(ar.Runner, "run", fake_run)
+    agent = Agent(
+        name="probe",
+        model="fake",
+        instructions="x",
+        output_type=dict,
+    )
+
+    with pytest.raises(RuntimeError, match="corrected response") as raised:
+        await AgentRunner.run(
+            agent,
+            "return JSON",
+            model="fake",
+            use_fallback=False,
+            max_corrections=1,
+        )
+
+    assert errors == []
+    assert isinstance(raised.value.__cause__, ModelBehaviorError)
+    assert "corrected response" in str(raised.value.__cause__)
 
 
 @pytest.mark.asyncio

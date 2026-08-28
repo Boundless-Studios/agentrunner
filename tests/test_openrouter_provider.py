@@ -115,3 +115,28 @@ async def test_retry_with_fallback_honors_validation_retry_budget():
         )
     # Retried the same model up to the budget (not moved to fallback), then raised.
     assert attempts == ["primary", "primary", "primary"]
+
+
+@pytest.mark.asyncio
+async def test_model_behavior_error_moves_to_fallback_model():
+    from agents.exceptions import ModelBehaviorError
+
+    prov = OpenRouterModelClientProvider(api_key="x", fallback_models=["backup"])
+    attempts = []
+
+    async def run_with_model(resolved, provider):
+        attempts.append(resolved)
+        if resolved == "primary":
+            raise ModelBehaviorError("invalid structured output")
+        return "corrected"
+
+    result, model = await prov.retry_with_fallback(
+        "primary",
+        run_with_model,
+        max_retries_per_model=2,
+        retry_on_validation_failure=False,
+    )
+
+    assert result == "corrected"
+    assert model == "backup"
+    assert attempts == ["primary", "backup"]

@@ -1,20 +1,22 @@
 """
 Generic agent runner that handles agent execution with proper model configuration.
 """
-import json
-
 import asyncio
+import json
 import logging
 from dataclasses import replace
-from typing import Any, AsyncIterator, Callable, List, Optional, Dict, Tuple, TypeVar
-from agents import Agent, ModelSettings, Runner, RunConfig
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, TypeVar
+
+from agents import Agent, ModelSettings, RunConfig, Runner
+from agents.exceptions import ModelBehaviorError
+
 from agentrunner.agents_sdk_setup import configure_agents_sdk
+from agentrunner.request_context import set_request_context
 from agentrunner.runtime import (
     get_active_provider,
     get_langfuse_prompt_resolver,
     get_prompt_correction_emitter,
 )
-from agentrunner.request_context import set_request_context
 from agentrunner.tracing_context import get_tracing_context
 
 logger = logging.getLogger(__name__)
@@ -400,36 +402,70 @@ class AgentRunner:
                     run_model_settings_kwargs["max_tokens"],
                 )
 
-            run_config = RunConfig(
-                model=attempt_model,
-                model_provider=model_provider,
-                model_settings=ModelSettings(**run_model_settings_kwargs),
-                **tracing_kwargs,
-            )
-
             logger.info(f"[AgentRunner] Running agent '{agent.name if hasattr(agent, 'name') else 'Unknown'}' with model {attempt_model}")
             if max_turns:
                 logger.debug(f"  Max turns: {max_turns}")
 
-            # Runner.run expects positional args: agent, prompt, then keyword args
-            run_kwargs = {"run_config": run_config}
+            async def run_once(run_agent: Agent, run_prompt: str, settings: dict) -> Any:
+                run_config = RunConfig(
+                    model=attempt_model,
+                    model_provider=model_provider,
+                    model_settings=ModelSettings(**settings),
+                    **tracing_kwargs,
+                )
+                run_kwargs = {"run_config": run_config}
+                if max_turns is not None:
+                    run_kwargs["max_turns"] = max_turns
+                if context is not None:
+                    run_kwargs["context"] = context
+                run_coro = runner.run(run_agent, run_prompt, **run_kwargs)
+                if timeout is None:
+                    return await run_coro
+                try:
+                    return await asyncio.wait_for(run_coro, timeout=timeout)
+                except asyncio.TimeoutError as exc:
+                    raise TimeoutError(
+                        f"Agent '{getattr(agent, 'name', None) or 'Unknown'}' timed out "
+                        f"after {timeout}s (model={attempt_model})"
+                    ) from exc
 
-            # Only add optional parameters if they're provided
-            if max_turns is not None:
-                run_kwargs["max_turns"] = max_turns
-            if context is not None:
-                run_kwargs["context"] = context
-
-            run_coro = runner.run(agent, _prompt_cell[0], **run_kwargs)
-            if timeout is None:
-                return await run_coro
             try:
-                return await asyncio.wait_for(run_coro, timeout=timeout)
-            except asyncio.TimeoutError as exc:
-                raise TimeoutError(
-                    f"Agent '{getattr(agent, 'name', None) or 'Unknown'}' timed out "
-                    f"after {timeout}s (model={attempt_model})"
-                ) from exc
+                return await run_once(agent, _prompt_cell[0], run_model_settings_kwargs)
+            except ModelBehaviorError as initial_error:
+                if getattr(agent, "output_type", None) is None or max_corrections <= 0:
+                    raise
+                correction_agent = replace(agent, tools=[])
+                correction_settings = {
+                    key: value
+                    for key, value in run_model_settings_kwargs.items()
+                    if key not in {"tool_choice", "parallel_tool_calls"}
+                }
+                current_error = initial_error
+                for correction_attempt in range(max_corrections):
+                    correction_prompt = (
+                        f"{prompt}\n\nYOUR PREVIOUS OUTPUT COULD NOT BE PARSED OR "
+                        "VALIDATED:\n"
+                        f"- {current_error}\n"
+                        "Return a corrected, complete response that exactly matches "
+                        "the required output schema. Do not call tools."
+                    )
+                    logger.info(
+                        "[AgentRunner] Structured-output correction attempt %d/%d "
+                        "for agent '%s' with model %s",
+                        correction_attempt + 1,
+                        max_corrections,
+                        getattr(agent, "name", None) or "Unknown",
+                        attempt_model,
+                    )
+                    try:
+                        return await run_once(
+                            correction_agent,
+                            correction_prompt,
+                            correction_settings,
+                        )
+                    except ModelBehaviorError as exc:
+                        current_error = exc
+                raise current_error
 
         # Run with or without fallback
         resolved_model = model_key  # Initialize for error handling
@@ -444,7 +480,7 @@ class AgentRunner:
                         model_key,
                         run_with_model,
                         max_retries_per_model=2,
-                        retry_on_validation_failure=True,
+                        retry_on_validation_failure=False,
                         task_name=agent_name,
                         provider_override=provider_override,
                     )

@@ -15,6 +15,7 @@ import os
 from typing import Any, Optional
 
 from agents import Model, ModelProvider, OpenAIChatCompletionsModel
+from agents.exceptions import ModelBehaviorError
 from openai import AsyncOpenAI
 
 from agentrunner.model_provider import RunWithModel
@@ -124,6 +125,8 @@ class OpenRouterModelClientProvider:
                         continue
                     if self.is_provider_error(exc):
                         break  # move to next fallback model
+                    if isinstance(exc, ModelBehaviorError):
+                        break  # AgentRunner already exhausted same-model correction
                     # Non-provider error (e.g. malformed JSON / schema validation):
                     # retry the same model within the budget before giving up, so a
                     # transient bad response doesn't fail the run on the first try.
